@@ -6,10 +6,17 @@ import WidgetKit
 // The Live Activity: the song, its progress and the line being sung, on the lock screen and in the
 // Dynamic Island, where long-pressing opens a small player (buttons need iOS 17).
 // The app keeps it up to date (App/LyricsLiveActivity.swift); this only draws it.
+// From iOS 18 it also has a small layout, which CarPlay (iOS 26) and the Apple Watch Smart Stack use:
+// without it CarPlay would only show the Dynamic Island's compact views (cover and waveform, no lyrics).
 @main
 struct MurielWidgets: WidgetBundle {
     var body: some Widget {
-        MurielLyricsLiveActivity()
+        if #available(iOS 18.0, *) {
+            MurielLyricsLiveActivitySmall()
+        }
+        if #unavailable(iOS 18.0) {
+            MurielLyricsLiveActivity()
+        }
     }
 }
 
@@ -18,10 +25,34 @@ private let violet = Color(red: 0.55, green: 0.36, blue: 0.96)
 
 struct MurielLyricsLiveActivity: Widget {
     var body: some WidgetConfiguration {
+        lyricsActivityConfiguration(smallLayout: false)
+    }
+}
+
+// the same activity, plus the small layout for CarPlay and the watch
+@available(iOS 18.0, *)
+struct MurielLyricsLiveActivitySmall: Widget {
+    var body: some WidgetConfiguration {
+        lyricsActivityConfiguration(smallLayout: true)
+            .supplementalActivityFamilies([.small])
+    }
+}
+
+private func lyricsActivityConfiguration(smallLayout: Bool) -> some WidgetConfiguration {
         ActivityConfiguration(for: MurielLyricsAttributes.self) { context in
-            LockScreenLyrics(state: context.state)
-                .activityBackgroundTint(Color.black.opacity(0.5))
-                .activitySystemActionForegroundColor(.white)
+            Group {
+                if smallLayout {
+                    if #available(iOS 18.0, *) {
+                        FamilyAwareLyrics(state: context.state)
+                    } else {
+                        LockScreenLyrics(state: context.state)
+                    }
+                } else {
+                    LockScreenLyrics(state: context.state)
+                }
+            }
+            .activityBackgroundTint(Color.black.opacity(0.5))
+            .activitySystemActionForegroundColor(.white)
         } dynamicIsland: { context in
             let state = context.state
             return DynamicIsland {
@@ -73,6 +104,62 @@ struct MurielLyricsLiveActivity: Widget {
             }
             .keylineTint(pink)
         }
+}
+
+// .small is CarPlay or the watch; anything else is the normal lock screen view
+@available(iOS 18.0, *)
+struct FamilyAwareLyrics: View {
+    @Environment(\.activityFamily) private var family
+    let state: MurielLyricsAttributes.ContentState
+
+    var body: some View {
+        switch family {
+        case .small:
+            SmallLyrics(state: state)
+        default:
+            LockScreenLyrics(state: state)
+        }
+    }
+}
+
+// CarPlay: read at a glance, so just the line being sung, big, under the song's name.
+// CarPlay activities can't be tapped, so no buttons and no progress bar.
+struct SmallLyrics: View {
+    let state: MurielLyricsAttributes.ContentState
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Artwork(data: state.artwork, size: 20, radius: 5)
+                Text(header)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(.white.opacity(0.65))
+                    .lineLimit(1)
+                Spacer(minLength: 2)
+                PlayingMark(playing: state.playing, size: 11)
+            }
+            Text(mainLine)
+                .font(.system(size: 17, weight: .bold, design: .rounded))
+                .foregroundColor(.white)
+                .lineLimit(2)
+                .minimumScaleFactor(0.7)
+                .contentTransition(.opacity)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .padding(10)
+    }
+
+    private var hasLyrics: Bool { !state.line.isEmpty || !state.next.isEmpty }
+
+    // with lyrics: the song on top and the line below; without: the artist on top and the song below
+    private var header: String {
+        hasLyrics ? [state.title, state.artist].filter { !$0.isEmpty }.joined(separator: " · ")
+                  : (state.artist.isEmpty ? "Muriel" : state.artist)
+    }
+
+    private var mainLine: String {
+        if hasLyrics { return state.line.isEmpty ? "♪" : state.line }
+        return state.title.isEmpty ? "Muriel" : state.title
     }
 }
 
