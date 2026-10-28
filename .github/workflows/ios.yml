@@ -41,6 +41,7 @@ jobs:
 
       - name: Compile (unsigned)
         run: |
+          set -o pipefail
           xcodebuild -quiet \
             -project ios/App/App.xcodeproj \
             -scheme App \
@@ -51,7 +52,7 @@ jobs:
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
             MARKETING_VERSION="$(node -p "require('./package.json').version.split('.').slice(0, 2).join('.')").${{ github.run_number }}" \
             CURRENT_PROJECT_VERSION="${{ github.run_number }}" \
-            build
+            build 2>&1 | tee build.log || { grep -E "error:" build.log | sort -u | head -20 | sed 's/^/::error::/'; exit 1; }
 
       - name: Package Muriel.ipa
         run: |
