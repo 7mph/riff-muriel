@@ -3646,6 +3646,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     state.currentTrackIndexInContext = startIndex;
 
     if (queueList) {
+      if (context !== 'search-radio' && context !== 'queue') state.radioSeed = null;
       state.queue = [...queueList];
       shuffleBag.next = [];
       if (startIndex >= 0 && startIndex < state.queue.length && isSameTrack(state.queue[startIndex], track)) {
@@ -5999,7 +6000,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   // one not heard yet). Repeat 'all' starts over instead, and My Wave keeps adding songs.
   function queueFinished() {
     const q = state.queue;
-    if (state.repeatMode !== 'off' || state.myWaveActive || !q.length) return false;
+    if (state.repeatMode !== 'off' || state.myWaveActive || state.radioSeed || !q.length) return false;
     if (!state.isShuffle) return state.queueIndex >= q.length - 1;
     if (shuffleBag.next.some(t => q.indexOf(t) >= 0 && t !== q[state.queueIndex])) return false;
     const played = shuffleBag.queue === q ? shuffleBag.played : new Set();
@@ -6039,7 +6040,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     let nextIdx = state.queueIndex + 1;
     if (nextIdx >= state.queue.length) {
-      if (state.myWaveActive && typeof extendMyWaveQueue === 'function') {
+      if ((state.myWaveActive || state.radioSeed) && typeof extendMyWaveQueue === 'function') {
         const tok = state.loadToken;
         setTrackLoading(true); // the next songs are still being picked
         const done = () => { if (tok === state.loadToken) setTrackLoading(false); };
@@ -6057,7 +6058,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     recordPlayedIndex(nextIdx);
     playTrack(state.queue[nextIdx]);
 
-    if (state.myWaveActive && state.queueIndex >= state.queue.length - 3 && typeof extendMyWaveQueue === 'function') {
+    if ((state.myWaveActive || state.radioSeed) && state.queueIndex >= state.queue.length - 3 && typeof extendMyWaveQueue === 'function') {
       extendMyWaveQueue();
     }
   }
@@ -7413,6 +7414,12 @@ document.addEventListener('DOMContentLoaded', async () => {
             // the queue as it is now: the rendered list could predate "Play next", and replaying it dropped that song
             currentList = state.queue;
             clickIndex = indexIn(currentList);
+          }
+          // a song from search plays on its own and then similar songs follow (Settings can turn it off:
+          // muriel_search_radio = '0' brings back the old queue of all the search results)
+          if (context === 'search' && localStorage.getItem('muriel_search_radio') !== '0') {
+            startSearchRadio(track);
+            return;
           }
           playTrack(track, currentList, clickIndex >= 0 ? clickIndex : idx, context);
         });
@@ -16187,7 +16194,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   // instead of getting false and doing nothing
   let myWaveExtending = null;
   function extendMyWaveQueue() {
-    if (!state.myWaveActive) return Promise.resolve(false);
+    if (!state.myWaveActive && !state.radioSeed) return Promise.resolve(false);
     if (!myWaveExtending) myWaveExtending = extendMyWaveQueueOnce().finally(() => { myWaveExtending = null; });
     return myWaveExtending;
   }
@@ -16196,6 +16203,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (isExtendingMyWave) return false;
     isExtendingMyWave = true;
     try {
+      if (state.radioSeed) return await extendSearchRadio();
       const profile = await computeTasteProfile();
       const res = await fetch(`http://127.0.0.1:${state.serverPort}/api/vibe`, {
         method: 'POST',
@@ -16232,6 +16240,67 @@ document.addEventListener('DOMContentLoaded', async () => {
     } finally {
       isExtendingMyWave = false;
     }
+  }
+
+  // ---- Song radio: a song played from search, then songs like it ----
+  function radioTitleKey(title) {
+    return String(title || '').toLowerCase()
+      .replace(/\(.*?\)|\[.*?\]/g, ' ')
+      .replace(/\b(official|video|audio|lyrics?|lyric video|music video|hd|4k|visualizer|remaster(ed)?|sped[ -]?up|slowed|reverb|nightcore|8d|live|version|cover|remix)\b/g, ' ')
+      .replace(/[^\p{L}\p{N}]+/gu, ' ')
+      .trim();
+  }
+  // another upload, a lyric video or a sped-up version of the same song
+  function isSameSongAs(a, b) {
+    if (!a || !b) return false;
+    if (isSameTrack(a, b)) return true;
+    const ta = radioTitleKey(a.title), tb = radioTitleKey(b.title);
+    if (!ta || !tb) return false;
+    return ta === tb || (ta.length >= 4 && tb.includes(ta)) || (tb.length >= 4 && ta.includes(tb));
+  }
+
+  function startSearchRadio(track) {
+    state.myWaveActive = false;
+    state.radioSeed = track;
+    playTrack(track, [track], 0, 'search-radio');
+    extendMyWaveQueue();
+  }
+
+  async function extendSearchRadio() {
+    const seed = state.radioSeed;
+    const seeds = [{ artist: seed.artist || '', title: seed.title || '', id: seed.id || '', platform: seed.platform || 'youtube', weight: 3 }];
+    // the last two songs the radio added, so it moves along instead of circling the first song
+    state.queue.slice(1).slice(-2).forEach(t => seeds.push({ artist: t.artist || '', title: t.title || '', id: t.id || '', platform: t.platform || 'youtube', weight: 1 }));
+    const res = await fetch(`http://127.0.0.1:${state.serverPort}/api/vibe`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        history: [],
+        favorites: [],
+        platform: 'youtube',
+        limit: 8,
+        seeds,
+        avoid: { keys: state.queue.map(t => getTrackNormalizedKey(t.artist, t.title)).filter(Boolean), artists: [] }
+      })
+    });
+    const data = await res.json();
+    if (state.radioSeed !== seed) return false; // the radio ended while this was loading
+    if (!data.success || !Array.isArray(data.tracks)) return false;
+    const fresh = data.tracks.filter(t => !state.queue.some(q => isSameSongAs(q, t)));
+    // at most two songs in a row by the artist of the one before
+    const picked = [];
+    for (const t of fresh) {
+      const prev = picked.length ? picked[picked.length - 1] : state.queue[state.queue.length - 1];
+      const prev2 = picked.length > 1 ? picked[picked.length - 2] : state.queue[state.queue.length - 2 + picked.length];
+      const a = normalizeArtistName(t.artist || '');
+      if (a && prev && prev2 && a === normalizeArtistName(prev.artist || '') && a === normalizeArtistName(prev2.artist || '')) continue;
+      if (!picked.some(p => isSameSongAs(p, t))) picked.push(t);
+    }
+    if (!picked.length) return false;
+    state.queue.push(...picked);
+    updateQueueBadge();
+    renderQueueView();
+    return true;
   }
 
   const btnPlayMyWave = document.getElementById('btn-play-my-wave');
