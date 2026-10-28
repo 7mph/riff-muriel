@@ -6,16 +6,13 @@ import WidgetKit
 // The Live Activity: the song, its progress and the line being sung, on the lock screen and in the
 // Dynamic Island, where long-pressing opens a small player (buttons need iOS 17).
 // The app keeps it up to date (App/LyricsLiveActivity.swift); this only draws it.
-// From iOS 18 it also has a small layout, which CarPlay (iOS 26) and the Apple Watch Smart Stack use:
-// without it CarPlay would only show the Dynamic Island's compact views (cover and waveform, no lyrics).
+// It also has a small layout, which CarPlay (iOS 26) and the Apple Watch Smart Stack use: without it
+// CarPlay would only show the Dynamic Island's compact views (cover and waveform, no lyrics).
+// That layout needs iOS 18, so this extension targets iOS 18 (the app itself still runs on 16.2).
 @main
 struct MurielWidgets: WidgetBundle {
     var body: some Widget {
-        if #available(iOS 18.0, *) {
-            MurielLyricsLiveActivitySmall()
-        } else {
-            MurielLyricsLiveActivity()
-        }
+        MurielLyricsLiveActivity()
     }
 }
 
@@ -24,34 +21,10 @@ private let violet = Color(red: 0.55, green: 0.36, blue: 0.96)
 
 struct MurielLyricsLiveActivity: Widget {
     var body: some WidgetConfiguration {
-        lyricsActivityConfiguration(smallLayout: false)
-    }
-}
-
-// the same activity, plus the small layout for CarPlay and the watch
-@available(iOS 18.0, *)
-struct MurielLyricsLiveActivitySmall: Widget {
-    var body: some WidgetConfiguration {
-        lyricsActivityConfiguration(smallLayout: true)
-            .supplementalActivityFamilies([.small])
-    }
-}
-
-private func lyricsActivityConfiguration(smallLayout: Bool) -> some WidgetConfiguration {
         ActivityConfiguration(for: MurielLyricsAttributes.self) { context in
-            Group {
-                if smallLayout {
-                    if #available(iOS 18.0, *) {
-                        FamilyAwareLyrics(state: context.state)
-                    } else {
-                        LockScreenLyrics(state: context.state)
-                    }
-                } else {
-                    LockScreenLyrics(state: context.state)
-                }
-            }
-            .activityBackgroundTint(Color.black.opacity(0.5))
-            .activitySystemActionForegroundColor(.white)
+            FamilyAwareLyrics(state: context.state)
+                .activityBackgroundTint(Color.black.opacity(0.5))
+                .activitySystemActionForegroundColor(.white)
         } dynamicIsland: { context in
             let state = context.state
             return DynamicIsland {
@@ -103,10 +76,11 @@ private func lyricsActivityConfiguration(smallLayout: Bool) -> some WidgetConfig
             }
             .keylineTint(pink)
         }
+        .supplementalActivityFamilies([.small])
+    }
 }
 
 // .small is CarPlay or the watch; anything else is the normal lock screen view
-@available(iOS 18.0, *)
 struct FamilyAwareLyrics: View {
     @Environment(\.activityFamily) private var family
     let state: MurielLyricsAttributes.ContentState
