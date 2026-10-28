@@ -13,8 +13,7 @@ struct MurielWidgets: WidgetBundle {
     var body: some Widget {
         if #available(iOS 18.0, *) {
             MurielLyricsLiveActivitySmall()
-        }
-        if #unavailable(iOS 18.0) {
+        } else {
             MurielLyricsLiveActivity()
         }
     }
