@@ -1,5 +1,6 @@
 import Foundation
 import UIKit
+import AVFoundation
 import Capacitor
 #if canImport(ActivityKit)
 import ActivityKit
@@ -115,6 +116,7 @@ final class LyricsActivity {
     private var shown: State?
     private var nextLine: DispatchWorkItem?
     private var idleEnd: DispatchWorkItem?
+    private let keepAwake = KeepAwake()
 
     func setTrack(id: String, title: String, artist: String, artworkURL: String) {
         trackId = id
@@ -151,11 +153,18 @@ final class LyricsActivity {
             DispatchQueue.main.asyncAfter(deadline: .now() + 20 * 60, execute: work)
         }
         refresh()
+        keepAwake.playing(playing && isLive)
+    }
+
+    private var isLive: Bool {
+        guard let a = activity else { return false }
+        return a.activityState == .active || a.activityState == .stale
     }
 
     func endAll() {
         nextLine?.cancel()
         idleEnd?.cancel()
+        keepAwake.stop()
         activity = nil
         shown = nil
         for a in Activity<MurielLyricsAttributes>.activities {
@@ -251,6 +260,54 @@ final class LyricsActivity {
             if let data = scaled.jpegData(compressionQuality: CGFloat(quality)), data.count <= 1700 { return data }
         }
         return nil
+    }
+}
+
+// Keeps Muriel itself running while a song plays in the background, so the lines above keep coming.
+// The song plays inside WebKit, which keeps the page going but not the app: iOS suspended the app,
+// its timers stopped and the lyrics stayed on one line (on the lock screen and in CarPlay) until it
+// was opened again. A muted loop of silence played by the app keeps it awake.
+@available(iOS 16.2, *)
+private final class KeepAwake {
+    private var player: AVAudioPlayer?
+    private var stopLater: DispatchWorkItem?
+
+    func playing(_ on: Bool) {
+        stopLater?.cancel()
+        if on { start(); return }
+        // between two songs it's paused for a moment; after a real pause the app may sleep again
+        let work = DispatchWorkItem { [weak self] in self?.stop() }
+        stopLater = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 60, execute: work)
+    }
+
+    func stop() {
+        stopLater?.cancel()
+        player?.stop()
+    }
+
+    private func start() {
+        if player == nil {
+            player = try? AVAudioPlayer(data: Self.silence())
+            player?.numberOfLoops = -1
+            player?.volume = 0
+        }
+        // only once a song plays, so WebKit has already taken the audio session (not stopping other apps)
+        guard let p = player, !p.isPlaying else { return }
+        p.play()
+    }
+
+    // one second of 16-bit mono silence as a WAV file
+    private static func silence(rate: UInt32 = 8000) -> Data {
+        let bytes = rate * 2
+        var d = Data()
+        func u32(_ v: UInt32) { withUnsafeBytes(of: v.littleEndian) { d.append(contentsOf: $0) } }
+        func u16(_ v: UInt16) { withUnsafeBytes(of: v.littleEndian) { d.append(contentsOf: $0) } }
+        d.append(contentsOf: Array("RIFF".utf8)); u32(36 + bytes); d.append(contentsOf: Array("WAVE".utf8))
+        d.append(contentsOf: Array("fmt ".utf8)); u32(16); u16(1); u16(1); u32(rate); u32(rate * 2); u16(2); u16(16)
+        d.append(contentsOf: Array("data".utf8)); u32(bytes)
+        d.append(Data(count: Int(bytes)))
+        return d
     }
 }
 #endif
